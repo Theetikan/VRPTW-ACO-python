@@ -44,7 +44,7 @@ class VrptwAcoFigure:
                 while not self.path_queue.empty():
                     info = self.path_queue.get()
 
-                path, distance, used_vehicle_num = info.get_path_info()
+                path, objective_value, used_vehicle_num = info.get_path_info()
                 if path is None:
                     print('[draw figure]: exit')
                     break
@@ -61,7 +61,35 @@ class VrptwAcoFigure:
                 remove_obj.clear()
 
                 # 重新绘制line
-                self.figure_ax.set_title('travel distance: %0.2f, number of vehicles: %d ' % (distance, used_vehicle_num))
+
+                metrics = {}
+                if hasattr(info, 'get_metrics'):
+                    try:
+                        metrics = info.get_metrics() or {}
+                    except TypeError:
+                        metrics = {}
+
+                extra_parts = []
+                value = metrics.get('travel_distance')
+                if isinstance(value, (int, float)):
+                    extra_parts.append('distance: %0.2f' % value)
+                value = metrics.get('travel_time')
+                if isinstance(value, (int, float)):
+                    extra_parts.append('time: %0.2f' % value)
+                value = metrics.get('fixed_cost')
+                if isinstance(value, (int, float)):
+                    extra_parts.append('fixed: %0.2f' % value)
+                value = metrics.get('operational_cost')
+                if isinstance(value, (int, float)):
+                    extra_parts.append('variable: %0.2f' % value)
+
+                safe_objective = objective_value if isinstance(objective_value, (int, float)) else 0.0
+                safe_vehicles = used_vehicle_num if isinstance(used_vehicle_num, int) else 0
+                title = 'objective: %0.2f, vehicles: %d' % (safe_objective, safe_vehicles)
+                if extra_parts:
+                    title += ' (' + ', '.join(extra_parts) + ')'
+
+                self.figure_ax.set_title(title)
                 self._draw_line(path)
             plt.pause(1)
 

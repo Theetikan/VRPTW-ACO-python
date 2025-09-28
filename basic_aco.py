@@ -10,7 +10,7 @@ import time
 
 class BasicACO:
     def __init__(self, graph: VrptwGraph, ants_num=10, max_iter=200, beta=2, q0=0.1,
-                 whether_or_not_to_show_figure=True):
+                 whether_or_not_to_show_figure=True, alpha=1.0):
         super()
         # graph 结点的位置、服务时间信息
         self.graph = graph
@@ -22,12 +22,14 @@ class BasicACO:
         self.max_load = graph.vehicle_capacity
         # beta 启发性信息重要性
         self.beta = beta
+        self.alpha = alpha
         # q0 表示直接选择概率最大的下一点的概率
         self.q0 = q0
-        # best path
-        self.best_path_distance = None
+        # best path tracking
         self.best_path = None
+        self.best_objective_value = None
         self.best_vehicle_num = None
+        self.best_metrics = None
 
         self.whether_or_not_to_show_figure = whether_or_not_to_show_figure
 
@@ -80,26 +82,50 @@ class BasicACO:
                 self.graph.local_update_pheromone(ants[k].current_index, 0)
 
             # 计算所有蚂蚁的路径长度
-            paths_distance = np.array([ant.total_travel_distance for ant in ants])
+            objective_values = np.array([ant.total_objective for ant in ants])
 
-            # 记录当前的最佳路径
-            best_index = np.argmin(paths_distance)
-            if self.best_path is None or paths_distance[best_index] < self.best_path_distance:
-                self.best_path = ants[int(best_index)].travel_path
-                self.best_path_distance = paths_distance[best_index]
+            best_index = np.argmin(objective_values)
+            best_ant = ants[int(best_index)]
+            best_objective = objective_values[best_index]
+
+            if self.best_path is None or best_objective < self.best_objective_value:
+                metrics = {
+                    "travel_time": best_ant.total_travel_time,
+                    "travel_distance": best_ant.total_travel_distance,
+                    "fixed_cost": best_ant.total_fixed_cost,
+                    "operational_cost": best_ant.total_operational_cost,
+                }
+
+                self.best_path = best_ant.travel_path
+                self.best_objective_value = best_objective
                 self.best_vehicle_num = self.best_path.count(0) - 1
+                self.best_metrics = metrics
                 start_iteration = iter
 
-                # 图形化展示
                 if self.whether_or_not_to_show_figure:
-                    path_queue_for_figure.put(PathMessage(self.best_path, self.best_path_distance))
+                    path_queue_for_figure.put(
+                        PathMessage(
+                            self.best_path,
+                            self.best_objective_value,
+                            **metrics,
+                        )
+                    )
 
                 print('\n')
-                print('[iteration %d]: find a improved path, its distance is %f' % (iter, self.best_path_distance))
-                print('it takes %0.3f second multiple_ant_colony_system running' % (time.time() - start_time_total))
+                print(
+                    '[iteration %d]: improved objective = %0.3f (time=%0.3f, distance=%0.3f, fixed=%0.3f, variable=%0.3f)'
+                    % (
+                        iter,
+                        self.best_objective_value,
+                        metrics["travel_time"],
+                        metrics["travel_distance"],
+                        metrics["fixed_cost"],
+                        metrics["operational_cost"],
+                    )
+                )
+                print('it takes %0.3f second Basic ACO running' % (time.time() - start_time_total))
 
-            # 更新信息素表
-            self.graph.global_update_pheromone(self.best_path, self.best_path_distance)
+            self.graph.global_update_pheromone(self.best_path, self.best_objective_value)
 
             given_iteration = 100
             if iter - start_iteration > given_iteration:
@@ -108,8 +134,22 @@ class BasicACO:
                 break
 
         print('\n')
-        print('final best path distance is %f, number of vehicle is %d' % (self.best_path_distance, self.best_vehicle_num))
-        print('it takes %0.3f second multiple_ant_colony_system running' % (time.time() - start_time_total))
+        if self.best_metrics is None:
+            print('no feasible path found')
+        else:
+            metrics = self.best_metrics
+            print(
+                'final best objective is %0.3f (time=%0.3f, distance=%0.3f, fixed=%0.3f, variable=%0.3f), number of vehicle is %d'
+                % (
+                    self.best_objective_value,
+                    metrics["travel_time"],
+                    metrics["travel_distance"],
+                    metrics["fixed_cost"],
+                    metrics["operational_cost"],
+                    self.best_vehicle_num or 0,
+                )
+            )
+        print('it takes %0.3f second ACO running' % (time.time() - start_time_total))
 
     def select_next_index(self, ant):
         """
@@ -120,9 +160,15 @@ class BasicACO:
         current_index = ant.current_index
         index_to_visit = ant.index_to_visit
 
-        transition_prob = self.graph.pheromone_mat[current_index][index_to_visit] * \
-            np.power(self.graph.heuristic_info_mat[current_index][index_to_visit], self.beta)
-        transition_prob = transition_prob / np.sum(transition_prob)
+        tau = np.power(
+        self.graph.pheromone_mat[current_index][index_to_visit],
+        self.alpha)
+        
+        eta_beta = np.power(
+        self.graph.heuristic_info_mat[current_index][index_to_visit],
+        self.beta)
+        
+        transition_prob = tau * eta_beta
 
         if np.random.rand() < self.q0:
             max_prob_index = np.argmax(transition_prob)

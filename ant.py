@@ -13,38 +13,96 @@ class Ant:
         self.vehicle_travel_time = 0
         self.travel_path = [start_index]
         self.arrival_time = [0]
+        self.vehicle_fleet = list(getattr(graph, "vehicle_fleet", []))
+        self.vehicle_capacities = list(getattr(graph, "vehicle_capacities", []) or [graph.vehicle_capacity])
+
+        self.current_vehicle_idx = 0
+        self.current_vehicle_capacity = self.vehicle_capacities[0] if self.vehicle_capacities else None
+        if self.current_vehicle_capacity is None:
+            raise ValueError("No vehicle capacity information available for ant initialization.")
+
+        if self.vehicle_fleet:
+            self.current_vehicle_info = self.vehicle_fleet[self.current_vehicle_idx]
+        else:
+            self.current_vehicle_info = {"fixed_cost": 0.0, "var_cost": 0.0}
+
+        self._route_active = False
 
         self.index_to_visit = list(range(graph.node_num))
         self.index_to_visit.remove(start_index)
 
         self.total_travel_distance = 0
+        self.total_travel_time = 0.0
+        self.total_fixed_cost = 0.0
+        self.total_operational_cost = 0.0
 
     def clear(self):
         self.travel_path.clear()
         self.index_to_visit.clear()
 
+    def _advance_vehicle(self):
+        if self.vehicle_capacities:
+            if self.current_vehicle_idx + 1 < len(self.vehicle_capacities):
+                self.current_vehicle_idx += 1
+            else:
+                self.current_vehicle_idx = len(self.vehicle_capacities) - 1
+                if not getattr(self.graph, "_fleet_warning_issued", False):
+                    print("Warning: available vehicle pool exhausted, reusing last capacity for additional routes.")
+                    self.graph._fleet_warning_issued = True
+            self.current_vehicle_capacity = self.vehicle_capacities[self.current_vehicle_idx]
+        else:
+            self.current_vehicle_capacity = self.graph.vehicle_capacity
+
+        if self.vehicle_fleet:
+            self.current_vehicle_info = self.vehicle_fleet[self.current_vehicle_idx]
+        else:
+            self.current_vehicle_info = {"fixed_cost": 0.0, "var_cost": 0.0}
+        self._route_active = False
+
     def move_to_next_index(self, next_index):
-        # 更新蚂蚁路径
+        # move ant to the requested node
         self.travel_path.append(next_index)
-        self.total_travel_distance += self.graph.node_dist_mat[self.current_index][next_index]
+
+        current_node = self.graph.nodes[self.current_index]
+        next_node = self.graph.nodes[next_index]
 
         dist = self.graph.node_dist_mat[self.current_index][next_index]
-        self.arrival_time.append(self.vehicle_travel_time + dist)
+        self.total_travel_distance += dist
 
-        if self.graph.nodes[next_index].is_depot:
-            # 如果一下个位置为服务器点，则要将车辆负载等清空
+        vehicle_info = self.current_vehicle_info if self.current_vehicle_info is not None else {"fixed_cost": 0.0, "var_cost": 0.0}
+        var_cost = float(vehicle_info.get("var_cost", 0.0))
+        self.total_operational_cost += var_cost * dist
+
+        current_is_depot = current_node.is_depot
+        next_is_depot = next_node.is_depot
+
+        if current_is_depot and not next_is_depot and not self._route_active:
+            self.total_fixed_cost += float(vehicle_info.get("fixed_cost", 0.0))
+            self._route_active = True
+
+        if next_is_depot:
+            self.vehicle_travel_time += dist
+            self.total_travel_time += dist
+            self.arrival_time.append(self.vehicle_travel_time)
+
             self.vehicle_load = 0
             self.vehicle_travel_time = 0
-
+            self._route_active = False
+            if self.index_to_visit:
+                self._advance_vehicle()
         else:
-            # 更新车辆负载、行驶距离、时间
-            self.vehicle_load += self.graph.nodes[next_index].demand
-            # 如果早于客户要求的时间窗(ready_time)，则需要等待
+            wait_time = max(next_node.ready_time - self.vehicle_travel_time - dist, 0)
+            service_time = next_node.service_time
+            travel_wait = dist + wait_time
 
-            self.vehicle_travel_time += dist + max(self.graph.nodes[next_index].ready_time - self.vehicle_travel_time - dist, 0) + self.graph.nodes[next_index].service_time
+            self.vehicle_load += next_node.demand
+            self.vehicle_travel_time += travel_wait + service_time
+            self.total_travel_time += travel_wait
+            self.arrival_time.append(self.vehicle_travel_time)
             self.index_to_visit.remove(next_index)
 
         self.current_index = next_index
+
 
     def index_to_visit_empty(self):
         return len(self.index_to_visit) == 0
@@ -58,7 +116,10 @@ class Ant:
         :param next_index:
         :return:
         """
-        if self.vehicle_load + self.graph.nodes[next_index].demand > self.graph.vehicle_capacity:
+        capacity = self.current_vehicle_capacity
+        if capacity is None:
+            return False
+        if self.vehicle_load + self.graph.nodes[next_index].demand > capacity:
             return False
 
         dist = self.graph.node_dist_mat[self.current_index][next_index]
@@ -114,6 +175,10 @@ class Ant:
             distance += graph.node_dist_mat[current_ind][next_ind]
             current_ind = next_ind
         return distance
+
+    @property
+    def total_objective(self):
+        return self.total_travel_time + self.total_fixed_cost + self.total_operational_cost
 
     def try_insert_on_path(self, node_id, stop_event: Event):
         """
